@@ -25,11 +25,13 @@ namespace Fido2NetLib.AttestationFormat
     internal class Packed : AttestationFormat
     {
         private readonly IMetadataService _metadataService;
+        private readonly bool _requireValidAttestationRoot;
 
-        public Packed(CBORObject attStmt, byte[] authenticatorData, byte[] clientDataHash, IMetadataService metadataService)
+        public Packed(CBORObject attStmt, byte[] authenticatorData, byte[] clientDataHash, IMetadataService metadataService, bool requireValidAttestationRoot)
             : base(attStmt, authenticatorData, clientDataHash)
         {
             _metadataService = metadataService;
+            _requireValidAttestationRoot = requireValidAttestationRoot;
         }
 
         public static bool IsValidPackedAttnCertSubject(string attnCertSubj)
@@ -37,10 +39,11 @@ namespace Fido2NetLib.AttestationFormat
             var dictSubject = attnCertSubj.Split(new string[] { ", " }, StringSplitOptions.None)
                                           .Select(part => part.Split('='))
                                           .ToDictionary(split => split[0], split => split[1]);
-            return (0 != dictSubject["C"].Length ||
-                0 != dictSubject["O"].Length ||
-                0 != dictSubject["OU"].Length ||
-                0 != dictSubject["CN"].Length ||
+
+            return (0 != dictSubject["C"].Length &&
+                0 != dictSubject["O"].Length &&
+                0 != dictSubject["OU"].Length &&
+                0 != dictSubject["CN"].Length &&
                 "Authenticator Attestation" == dictSubject["OU"].ToString());
         }
 
@@ -54,7 +57,7 @@ namespace Fido2NetLib.AttestationFormat
             if (null == Sig || CBORType.ByteString != Sig.Type || 0 == Sig.GetByteString().Length)
                 throw new Fido2VerificationException("Invalid packed attestation signature");
 
-            if (null == Alg || CBORType.Number != Alg.Type)
+            if (null == Alg || true != Alg.IsNumber)
                 throw new Fido2VerificationException("Invalid packed attestation algorithm");
 
             // If x5c is present, this indicates that the attestation type is not ECDAA
@@ -106,7 +109,7 @@ namespace Fido2NetLib.AttestationFormat
                 if (aaguid != null)
                 {
                     if (0 != AttestedCredentialData.FromBigEndian(aaguid).CompareTo(AuthData.AttestedCredentialData.AaGuid))
-                        throw new Fido2VerificationException("aaguid present in packed attestation but does not match aaguid from authData");
+                        throw new Fido2VerificationException("aaguid present in packed attestation cert exts but does not match aaguid from authData");
                 }
                 // 2d. The Basic Constraints extension MUST have the CA component set to false
                 if (IsAttnCertCACert(attestnCert.Extensions))
@@ -141,6 +144,14 @@ namespace Fido2NetLib.AttestationFormat
                         }
                     }
                     var valid = chain.Build(trustPath[0]);
+
+                    if (_requireValidAttestationRoot)
+                    {
+                        // because we are using AllowUnknownCertificateAuthority we have to verify that the root matches ourselves
+                        var chainRoot = chain.ChainElements[chain.ChainElements.Count - 1].Certificate;
+                        valid = valid && chainRoot.RawData.SequenceEqual(root.RawData);
+                    }
+
                     if (false == valid)
                     {
                         throw new Fido2VerificationException("Invalid certificate chain in packed attestation");

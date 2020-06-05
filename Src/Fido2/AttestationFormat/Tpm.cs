@@ -1,9 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using Asn1;
 using Fido2NetLib.Objects;
 using PeterO.Cbor;
 
@@ -11,9 +11,12 @@ namespace Fido2NetLib.AttestationFormat
 {
     internal class Tpm : AttestationFormat
     {
-        public Tpm(CBORObject attStmt, byte[] authenticatorData, byte[] clientDataHash) 
+        private readonly bool _requireValidAttestationRoot;
+
+        public Tpm(CBORObject attStmt, byte[] authenticatorData, byte[] clientDataHash, bool requireValidAttestationRoot) 
             : base(attStmt, authenticatorData, clientDataHash)
         {
+            _requireValidAttestationRoot = requireValidAttestationRoot;
         }
 
         public static readonly Dictionary<string, X509Certificate2[]> TPMManufacturerRootMap = new Dictionary<string, X509Certificate2[]>
@@ -470,14 +473,14 @@ namespace Fido2NetLib.AttestationFormat
                 certInfo = new CertInfo(attStmt["certInfo"].GetByteString());
             }
 
-            if (null == certInfo || null == certInfo.ExtraData || 0 == certInfo.ExtraData.Length)
+            if (null == certInfo)
                 throw new Fido2VerificationException("CertInfo invalid parsing TPM format attStmt");
 
             // Verify that magic is set to TPM_GENERATED_VALUE and type is set to TPM_ST_ATTEST_CERTIFY 
             // handled in parser, see CertInfo.Magic
 
             // Verify that extraData is set to the hash of attToBeSigned using the hash algorithm employed in "alg"
-            if (null == Alg || CBORType.Number != Alg.Type || false == CryptoUtils.algMap.ContainsKey(Alg.AsInt32()))
+            if (null == Alg || true != Alg.IsNumber || false == CryptoUtils.algMap.ContainsKey(Alg.AsInt32()))
                 throw new Fido2VerificationException("Invalid TPM attestation algorithm");
             using(var hasher = CryptoUtils.GetHasher(CryptoUtils.algMap[Alg.AsInt32()]))
             {
@@ -521,9 +524,7 @@ namespace Fido2NetLib.AttestationFormat
 
                 // The Subject Alternative Name extension MUST be set as defined in [TPMv2-EK-Profile] section 3.2.9.
                 // https://www.w3.org/TR/webauthn/#tpm-cert-requirements
-                var SAN = SANFromAttnCertExts(aikCert.Extensions);
-                if (null == SAN || 0 == SAN.Length)
-                    throw new Fido2VerificationException("SAN missing from TPM attestation certificate");
+                (string tpmManufacturer, string tpmModel, string tpmVersion) = SANFromAttnCertExts(aikCert.Extensions);
 
                 // From https://www.trustedcomputinggroup.org/wp-content/uploads/Credential_Profile_EK_V2.0_R14_published.pdf
                 // "The issuer MUST include TPM manufacturer, TPM part number and TPM firmware version, using the directoryName 
@@ -531,21 +532,14 @@ namespace Fido2NetLib.AttestationFormat
                 // Attributes. In accordance with RFC 5280[11], this extension MUST be critical if subject is empty 
                 // and SHOULD be non-critical if subject is non-empty"
 
-                // AsnEncodedData does this for us on Windows
-                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-                {
-                    SAN = SAN.Replace("2.23.133.2.1", "TPMManufacturer")
-                        .Replace("2.23.133.2.2", "TPMModel")
-                        .Replace("2.23.133.2.3", "TPMVersion");
-                }
                 // Best I can figure to do for now?
-                if (false == SAN.Contains("TPMManufacturer") ||
-                    false == SAN.Contains("TPMModel") ||
-                    false == SAN.Contains("TPMVersion"))
+                if (string.Empty == tpmManufacturer ||
+                    string.Empty == tpmModel ||
+                    string.Empty == tpmVersion)
                 {
                     throw new Fido2VerificationException("SAN missing TPMManufacturer, TPMModel, or TPMVersion from TPM attestation certificate");
                 }
-                var tpmManufacturer = SAN.Substring(SAN.IndexOf("TPMManufacturer"), 27).Split('=').Last();
+
                 if (false == TPMManufacturerRootMap.ContainsKey(tpmManufacturer))
                     throw new Fido2VerificationException("Invalid TPM manufacturer found parsing TPM attestation");
                 var tpmRoots = TPMManufacturerRootMap[tpmManufacturer];
@@ -555,7 +549,7 @@ namespace Fido2NetLib.AttestationFormat
                 {
                     var chain = new X509Chain();
                     chain.ChainPolicy.ExtraStore.Add(tpmRoots[i]);
-                    i++;
+                    
                     chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
                     if (tpmManufacturer == "id:FFFFF1D0")
                     {
@@ -573,6 +567,15 @@ namespace Fido2NetLib.AttestationFormat
                         }
                     }
                     valid = chain.Build(new X509Certificate2(X5c.Values.First().GetByteString()));
+
+                    if (_requireValidAttestationRoot)
+                    {
+                        // because we are using AllowUnknownCertificateAuthority we have to verify that the root matches ourselves
+                        var chainRoot = chain.ChainElements[chain.ChainElements.Count - 1].Certificate;
+                        valid = valid && chainRoot.RawData.SequenceEqual(tpmRoots[i].RawData);
+                    }
+
+                    i++;
                 }
                 if (false == valid)
                     throw new Fido2VerificationException("TPM attestation failed chain validation");
@@ -580,7 +583,7 @@ namespace Fido2NetLib.AttestationFormat
                 // OID is 2.23.133.8.3
                 var EKU = EKUFromAttnCertExts(aikCert.Extensions, "2.23.133.8.3");
                 if (!EKU)
-                    throw new Fido2VerificationException("Invalid EKU on AIK certificate");
+                    throw new Fido2VerificationException("aikCert EKU missing tcg-kp-AIKCertificate OID");
 
                 // The Basic Constraints extension MUST have the CA component set to false.
                 if (IsAttnCertCACert(aikCert.Extensions))
@@ -590,8 +593,8 @@ namespace Fido2NetLib.AttestationFormat
                 var aaguid = AaguidFromAttnCertExts(aikCert.Extensions);
                 if ((null != aaguid) &&
                     (!aaguid.SequenceEqual(Guid.Empty.ToByteArray())) &&
-                    (0 != new Guid(aaguid).CompareTo(AuthData.AttestedCredentialData.AaGuid)))
-                    throw new Fido2VerificationException("aaguid malformed");
+                    (0 != AttestedCredentialData.FromBigEndian(aaguid).CompareTo(AuthData.AttestedCredentialData.AaGuid)))
+                    throw new Fido2VerificationException(string.Format("aaguid malformed, expected {0}, got {1}", AuthData.AttestedCredentialData.AaGuid, new Guid(aaguid)));
             }
             // If ecdaaKeyId is present, then the attestation type is ECDAA
             else if (null != EcdaaKeyId)
@@ -614,17 +617,76 @@ namespace Fido2NetLib.AttestationFormat
             { 2, TpmEccCurve.TPM_ECC_NIST_P384},
             { 3, TpmEccCurve.TPM_ECC_NIST_P521}
         };
-        private static string SANFromAttnCertExts(X509ExtensionCollection exts)
+        private static (string, string, string) SANFromAttnCertExts(X509ExtensionCollection exts)
         {
+            string tpmManufacturer = string.Empty,
+                tpmModel = string.Empty,
+                tpmVersion = string.Empty;
+            
+            var foundSAN = false;
+
             foreach (var ext in exts)
             {
                 if (ext.Oid.Value.Equals("2.5.29.17")) // subject alternative name
                 {
-                    var asn = new AsnEncodedData(ext.Oid, ext.RawData);
-                    return asn.Format(true);
+                    if (0 == ext.RawData.Length)
+                        throw new Fido2VerificationException("SAN missing from TPM attestation certificate");
+
+                    foundSAN = true;
+                    var san = AsnElt.Decode(ext.RawData);
+                    san.CheckTag(AsnElt.SEQUENCE);
+                    san.CheckConstructed();
+                    foreach (AsnElt generalName in san.Sub)
+                    {
+                        if (generalName.TagClass != AsnElt.CONTEXT || generalName.TagValue != AsnElt.OCTET_STRING)
+                            continue;
+
+                        generalName.CheckConstructed();
+                        generalName.CheckNumSub(1);
+                        
+                        var exp = generalName.GetSub(0);
+                        exp.CheckConstructed();
+                        exp.CheckNumSub(1);
+                        exp.CheckTag(AsnElt.SEQUENCE);
+
+                        var directoryName = exp.GetSub(0);
+                        directoryName.CheckConstructed();
+                        directoryName.CheckNumSub(3);
+                        directoryName.CheckTag(AsnElt.SET);
+
+                        foreach (AsnElt dn in directoryName.Sub)
+                        {
+                            dn.CheckNumSub(2);
+                            dn.CheckTag(AsnElt.SEQUENCE);
+                            var oid = dn.GetSub(0);
+                            oid.CheckTag(AsnElt.OBJECT_IDENTIFIER);
+                            oid.CheckPrimitive();
+
+                            var value = dn.GetSub(1);
+                            value.CheckTag(AsnElt.UTF8String);
+                            oid.CheckPrimitive();
+                            switch (oid.GetOID())
+                            {
+                                case ("2.23.133.2.1"):
+                                    tpmManufacturer = value.GetString();
+                                    break;
+                                case ("2.23.133.2.2"):
+                                    tpmModel = value.GetString();
+                                    break;
+                                case ("2.23.133.2.3"):
+                                    tpmVersion = value.GetString();
+                                    break;
+                                default:
+                                    continue;
+                            }
+                        }
+                    }
                 }
             }
-            return null;
+            if (false == foundSAN)
+                throw new Fido2VerificationException("SAN missing from TPM attestation certificate");
+
+            return (tpmManufacturer, tpmModel, tpmVersion);
         }
         private static bool EKUFromAttnCertExts(X509ExtensionCollection exts, string expectedEnhancedKeyUsages)
         {
@@ -738,9 +800,18 @@ namespace Fido2NetLib.AttestationFormat
                 {
                     name = AuthDataHelper.GetSizedByteArray(ab, ref offset, tpmAlgToDigestSizeMap[tpmalg]);
                 }
+                else
+                {
+                    throw new Fido2VerificationException("TPM_ALG_ID found in TPM2B_NAME not acceptable hash algorithm");
+                }
             }
+            else
+            {
+                throw new Fido2VerificationException("Invalid TPM_ALG_ID found in TPM2B_NAME");
+            }
+
             if (totalSize != bytes.Length + name.Length)
-                throw new Fido2VerificationException("Unexpected no name found in TPM2B_NAME");
+                throw new Fido2VerificationException("Unexpected extra bytes found in TPM2B_NAME");
             return (size, name);
         }
 
@@ -752,10 +823,10 @@ namespace Fido2NetLib.AttestationFormat
             var offset = 0;
             Magic = AuthDataHelper.GetSizedByteArray(certInfo, ref offset, 4);
             if (0xff544347 != BitConverter.ToUInt32(Magic.ToArray().Reverse().ToArray(), 0))
-                throw new Fido2VerificationException("Bad magic number " + Magic.ToString());
+                throw new Fido2VerificationException("Bad magic number " + BitConverter.ToString(Magic).Replace("-",""));
             Type = AuthDataHelper.GetSizedByteArray(certInfo, ref offset, 2);
             if (0x8017 != BitConverter.ToUInt16(Type.ToArray().Reverse().ToArray(), 0))
-                throw new Fido2VerificationException("Bad structure tag " + Type.ToString());
+                throw new Fido2VerificationException("Bad structure tag " + BitConverter.ToString(Type).Replace("-", ""));
             QualifiedSigner = AuthDataHelper.GetSizedByteArray(certInfo, ref offset);
             ExtraData = AuthDataHelper.GetSizedByteArray(certInfo, ref offset);
             if (null == ExtraData || 0 == ExtraData.Length)

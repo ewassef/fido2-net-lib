@@ -1,6 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
-using Fido2NetLib;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -40,7 +38,7 @@ namespace Fido2Demo
                 // Strict SameSite mode is required because the default mode used
                 // by ASP.NET Core 3 isn't understood by the Conformance Tool
                 // and breaks conformance testing
-                options.Cookie.SameSite = SameSiteMode.Strict;
+                options.Cookie.SameSite = SameSiteMode.Unspecified;
             });
 
             services.AddFido2(options =>
@@ -51,6 +49,7 @@ namespace Fido2Demo
                 options.TimestampDriftTolerance = Configuration.GetValue<int>("fido2:timestampDriftTolerance");
                 options.MDSAccessKey = Configuration["fido2:MDSAccessKey"];
                 options.MDSCacheDirPath = Configuration["fido2:MDSCacheDirPath"];
+                options.RequireValidAttestationRoot = Configuration.GetValue<bool>("fido2:requireValidAttestationRoot");
             })
             .AddCachedMetadataService(config =>
             {
@@ -61,6 +60,8 @@ namespace Fido2Demo
                     config.AddFidoMetadataRepository(Configuration["fido2:MDSAccessKey"]);
                 }
             });
+
+        
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.

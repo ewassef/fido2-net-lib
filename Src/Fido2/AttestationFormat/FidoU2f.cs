@@ -11,9 +11,11 @@ namespace Fido2NetLib.AttestationFormat
     internal class FidoU2f : AttestationFormat
     {
         private readonly IMetadataService _metadataService;
-        public FidoU2f(CBORObject attStmt, byte[] authenticatorData, byte[] clientDataHash, IMetadataService metadataService) : base(attStmt, authenticatorData, clientDataHash)
+        private readonly bool _requireValidAttestationRoot;
+        public FidoU2f(CBORObject attStmt, byte[] authenticatorData, byte[] clientDataHash, IMetadataService metadataService, bool requireValidAttestationRoot) : base(attStmt, authenticatorData, clientDataHash)
         {
             _metadataService = metadataService;
+            _requireValidAttestationRoot = requireValidAttestationRoot;
         }
         public override void Verify()
         {
@@ -63,6 +65,13 @@ namespace Fido2NetLib.AttestationFormat
                         valid = true;
                     }
 
+                    if (_requireValidAttestationRoot)
+                    {
+                        // because we are using AllowUnknownCertificateAuthority we have to verify that the root matches ourselves
+                        var chainRoot = chain.ChainElements[chain.ChainElements.Count - 1].Certificate;
+                        valid = valid && chainRoot.RawData.SequenceEqual(root.RawData);
+                    }
+
                     if (false == valid)
                     {
                         throw new Fido2VerificationException("Invalid certificate chain in U2F attestation");
@@ -106,10 +115,16 @@ namespace Fido2NetLib.AttestationFormat
             if (null == Sig || CBORType.ByteString != Sig.Type || 0 == Sig.GetByteString().Length)
                 throw new Fido2VerificationException("Invalid fido-u2f attestation signature");
 
-            var ecsig = CryptoUtils.SigFromEcDsaSig(Sig.GetByteString(), pubKey.KeySize);
-            if (null == ecsig)
-                throw new Fido2VerificationException("Failed to decode fido-u2f attestation signature from ASN.1 encoded form");
-            
+            byte[] ecsig;
+            try
+            {
+                ecsig = CryptoUtils.SigFromEcDsaSig(Sig.GetByteString(), pubKey.KeySize);
+            }
+            catch (Exception ex)
+            {
+                throw new Fido2VerificationException("Failed to decode fido-u2f attestation signature from ASN.1 encoded form", ex);
+            }
+
             var coseAlg = CredentialPublicKey[CBORObject.FromObject(COSE.KeyCommonParameter.Alg)].AsInt32();
             var hashAlg = CryptoUtils.algMap[coseAlg];
 

@@ -1,9 +1,10 @@
 # FIDO2 .NET Library (WebAuthn)
 A working implementation library + demo for [FIDO2](https://fidoalliance.org/fido2/) and [WebAuthn](https://www.w3.org/TR/webauthn/) using [.NET](https://dotnet.microsoft.com/)  
-
-[![Build status](https://anders.visualstudio.com/Fido2/_apis/build/status/Fido2-CI?label=Build)](https://anders.visualstudio.com/Fido2/_build/latest?definitionId=2)
-[![Test Status](https://anders.visualstudio.com/Fido2/_apis/build/status/Fido2%20Tests?branchName=master&label=Tests)](https://anders.visualstudio.com/Fido2/_build/latest?definitionId=3?branchName=master)
+[![Build Status](https://dev.azure.com/anders/Fido2/_apis/build/status/abergs.fido2-net-lib?branchName=master)](https://dev.azure.com/anders/Fido2/_build/latest?definitionId=10&branchName=master)
+[![codecov](https://codecov.io/gh/abergs/fido2-net-lib/branch/master/graph/badge.svg)](https://codecov.io/gh/abergs/fido2-net-lib)
 [![Financial Contributors on Open Collective](https://opencollective.com/passwordless/all/badge.svg?label=financial+contributors)](https://opencollective.com/passwordless) 
+
+[![NuGet Status](http://img.shields.io/nuget/v/Fido2.svg?style=flat-square)](https://www.nuget.org/packages/Fido2/) [Change log](https://github.com/abergs/fido2-net-lib/blob/master/CHANGELOG.md)
 
 ### Purpose
 
@@ -11,7 +12,11 @@ Enable passwordless sign in for all .net apps (asp, core, native).
 
 To provide a developer friendly and well tested [.NET](https://dotnet.microsoft.com/) [FIDO2 Server](https://fidoalliance.org/specs/fido-v2.0-rd-20180702/fido-server-v2.0-rd-20180702.html) / [WebAuthn relying party](https://www.w3.org/TR/webauthn/#relying-party) library for the easy validation of [registration](https://www.w3.org/TR/webauthn/#usecase-registration) ([attestation](https://www.w3.org/TR/webauthn/#attestation)) and [authentication](https://www.w3.org/TR/webauthn/#usecase-authentication) ([assertion](https://www.w3.org/TR/webauthn/#authentication-assertion)) of [FIDO2](https://fidoalliance.org/fido2/) / [WebAuthn](https://www.w3.org/TR/webauthn/) credentials, in order to increase the adoption of the technology, ultimately defeating phishing attacks.
 
-```Install-Package Fido2 -Version 1.0.1```
+```Install-Package Fido2 -Version 1.1.0```
+
+To use the asp.net helpers, install the asp.net-package.  
+
+```Install-Package Fido2.AspNet -Version 1.1.0```
 
 ### Demo
 * **Online example**: https://www.passwordless.dev
@@ -96,8 +101,9 @@ When the client returns a response, we verify and register the credentials.
 
 ```csharp
 // file: Controller.cs
-// 1. get the options we sent the client
+// 1. get the options we sent the client and remove it from storage
 var jsonOptions = HttpContext.Session.GetString("fido2.attestationOptions");
+HttpContext.Session.Remove("fido2.attestationOptions");
 var options = CredentialCreateOptions.FromJson(jsonOptions);
 
 // 2. Create callback so that lib can verify credential id is unique to this user
@@ -156,8 +162,9 @@ return Json(options);
 When the client returns a response, we verify it and accepts the login.
 
 ```csharp
-// 1. Get the assertion options we sent the client
+// 1. Get the assertion options we sent the client and remove from storage
 var jsonOptions = HttpContext.Session.GetString("fido2.assertionOptions");
+HttpContext.Session.Remove("fido2.assertionOptions");
 var options = AssertionOptions.FromJson(jsonOptions);
 
 // 2. Get registered credential from database

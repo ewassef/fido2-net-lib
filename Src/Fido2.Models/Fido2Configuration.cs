@@ -1,4 +1,6 @@
-﻿namespace Fido2NetLib
+﻿using System.Net.Http;
+
+namespace Fido2NetLib
 {
     public class Fido2Configuration
     {
@@ -12,6 +14,11 @@
         /// TimestampDriftTolerance specifies a time in milliseconds that will be allowed for clock drift on a timestamped attestation.
         /// </summary>
         public int TimestampDriftTolerance { get; set; } = 0; //Pretty sure 0 will never work - need a better default?
+
+        /// <summary>
+        /// When checking attestation, require the attestation to chain to a known root
+        /// </summary>
+        public bool RequireValidAttestationRoot { get; set; } = false;
 
         /// <summary>
         /// The size of the challenges sent to the client
